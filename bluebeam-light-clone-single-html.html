@@ -1,0 +1,886 @@
+The `pdfjsLib is not defined` error is because the latest `pdf.js` CDN build you're linking to uses ES Modules, not the old global variable style. To fix it, you should load the **compatibility build** that still exposes `pdfjsLib` as a global.
+
+Replace your current `pdf.js` import:
+```html
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+</script>
+```
+  <!--
+    Bluebeam‑Lite (Web)
+    -----------------------------------------------------------------------
+    A single‑file, browser‑only prototype that mimics core Bluebeam/Revu
+    workflows:
+      • Open & view PDFs
+      • Thumbnails + page navigation
+      • Add annotations (text, rectangle, highlight, pen/freehand, note)
+      • Create hyperlinks (external URL or jump to page)
+      • Insert signature (draw or upload)
+      • Properties panel (stroke/fill/opacity/font/size)
+      • Save flattened PDF (burn in annotations)
+      • Save with live hyperlinks preserved as real PDF link annotations
+
+    Tech:
+      • pdf.js for rendering
+      • pdf-lib for writing/flattening
+      • Vanilla JS + SVG overlay per page for annotations
+
+    Notes:
+      • This is an educational prototype; not a production drop-in.
+      • Some advanced Bluebeam features are out of scope (measurement,
+        OCR, forms studio, markups list export, real-time collab, etc.).
+  -->
+  <style>
+    :root{
+      --bg:#0f1115; --panel:#151820; --panel-2:#1a1f2a; --accent:#3a82f7; --accent-2:#7aa2ff;
+      --muted:#98a2b3; --text:#e6e6ea; --ok:#2fbf71; --warn:#ffc857; --danger:#ff6b6b;
+      --border:#2a3040; --shadow:0 6px 30px rgba(0,0,0,.35);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%; margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial}
+    button,input,select{font:inherit; color:inherit}
+    .app{display:grid; grid-template-rows:48px 1fr 28px; height:100%}
+    .menubar{display:flex; align-items:center; gap:8px; padding:8px 12px; background:linear-gradient(180deg, #111419, #0d0f14); border-bottom:1px solid var(--border); box-shadow:var(--shadow)}
+    .menubar .brand{font-weight:700; letter-spacing:.3px; color:#cbd5ff}
+    .toolbar{display:flex; gap:6px; margin-left:10px}
+    .toolbar .btn{background:var(--panel); border:1px solid var(--border); padding:6px 10px; border-radius:8px; cursor:pointer}
+    .toolbar .btn.active{outline:2px solid var(--accent); background:var(--panel-2)}
+    .toolbar .sep{width:1px; background:var(--border); margin:0 6px}
+    .right-tools{margin-left:auto; display:flex; gap:8px}
+    .right-tools input[type="file"]{display:none}
+    .right-tools label{background:var(--ok); color:#08110a; padding:6px 10px; border-radius:8px; cursor:pointer; font-weight:600}
+    .right-tools .save{background:var(--accent)}
+
+    .main{display:grid; grid-template-columns:220px 1fr 280px; gap:0; min-height:0}
+    .panel{background:var(--panel); border-right:1px solid var(--border); overflow:auto}
+    .panel.right{border-left:1px solid var(--border); border-right:none}
+    .panel h3{margin:12px; font-size:12px; color:#b8c1d1; text-transform:uppercase; letter-spacing:.12em}
+    #thumbs{display:grid; gap:8px; padding:10px}
+    .thumb{background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.25)}
+    .thumb.active{outline:2px solid var(--accent)}
+    .thumb canvas{width:100%; height:auto; display:block}
+
+    .viewport{position:relative; overflow:auto; background:#0b0e13}
+    .page{position:relative; margin:16px auto; box-shadow:0 8px 40px rgba(0,0,0,.4); background:white; border-radius:4px}
+    .page canvas.pdf{display:block; width:100%; height:auto}
+    .page svg.overlay{position:absolute; inset:0; pointer-events:none}
+    .page svg.overlay .annot{pointer-events:all}
+
+    .props{padding:10px}
+    .field{display:grid; grid-template-columns:110px 1fr; align-items:center; gap:8px; padding:6px 12px}
+    .field input[type="color"], .field input[type="number"], .field select{background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:6px}
+    .group{border:1px solid var(--border); border-radius:12px; overflow:hidden; margin:10px; background:var(--panel-2)}
+    .group h4{margin:0; padding:8px 12px; font-size:12px; color:#9fb0d0; background:#0f131b; border-bottom:1px solid var(--border)}
+
+    .statusbar{display:flex; align-items:center; gap:12px; padding:4px 10px; background:#0b0e13; border-top:1px solid var(--border); color:#98a2b3}
+    .statusbar .pill{background:#121620; border:1px solid var(--border); border-radius:999px; padding:2px 8px}
+
+    .floating{position:fixed; right:16px; bottom:16px; display:flex; gap:8px}
+    .fab{background:var(--accent); color:white; border:none; border-radius:999px; padding:10px 14px; cursor:pointer; box-shadow:var(--shadow); font-weight:700}
+    .fab.secondary{background:#2c3347}
+
+    .note-popup{position:absolute; background:#111827; color:#e5e7eb; border:1px solid #374151; border-radius:8px; padding:8px; min-width:180px; z-index:50}
+    .note-popup textarea{width:100%; min-height:80px; background:#0b0f19; color:#e5e7eb; border:1px solid #303749; border-radius:6px; padding:6px}
+
+    .hidden{display:none}
+  </style>
+  <!-- pdf.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.js"></script>
+  <script>
+    // Configure pdf.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js';
+  </script>
+  <!-- pdf-lib -->
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <!-- Top menu / ribbon -->
+    <div class="menubar">
+      <div class="brand">Bluebeam‑Lite</div>
+      <div class="toolbar" id="tools">
+        <button class="btn" data-tool="pan" title="Pan/Select (V)">🖐️ Pan</button>
+        <button class="btn" data-tool="text" title="Text (T)">🅣 Text</button>
+        <button class="btn" data-tool="rect" title="Rectangle (R)">▭ Rect</button>
+        <button class="btn" data-tool="highlight" title="Highlight (H)">🖍️ Highlight</button>
+        <button class="btn" data-tool="pen" title="Freehand/Pen (P)">✏️ Pen</button>
+        <button class="btn" data-tool="note" title="Sticky Note (N)">🗒️ Note</button>
+        <button class="btn" data-tool="link" title="Hyperlink (L)">🔗 Link</button>
+        <button class="btn" data-tool="signature" title="Place Signature (S)">✒️ Sign</button>
+        <div class="sep"></div>
+        <button class="btn" id="zoomOut" title="Zoom Out">➖</button>
+        <button class="btn" id="zoomIn" title="Zoom In">➕</button>
+        <span class="btn" id="zoomLabel" style="border:none;background:transparent">100%</span>
+        <div class="sep"></div>
+        <button class="btn" id="undoBtn" title="Undo (Ctrl+Z)">↶ Undo</button>
+        <button class="btn" id="redoBtn" title="Redo (Ctrl+Y)">↷ Redo</button>
+        <button class="btn" id="deleteBtn" title="Delete Selected (Del)">🗑️ Delete</button>
+      </div>
+      <div class="right-tools">
+        <input id="fileInput" type="file" accept="application/pdf" />
+        <label for="fileInput" title="Open PDF">📄 Open PDF</label>
+        <button class="save btn" id="saveFlatten">💾 Save Flattened</button>
+        <button class="save btn" id="saveWithLinks">🔗 Save (Keep Links)</button>
+      </div>
+    </div>
+
+    <div class="main">
+      <!-- Left: Thumbnails -->
+      <div class="panel">
+        <h3>Pages</h3>
+        <div id="thumbs"></div>
+      </div>
+
+      <!-- Center: Pages viewport -->
+      <div class="viewport" id="viewport"></div>
+
+      <!-- Right: Properties -->
+      <div class="panel right">
+        <h3>Properties</h3>
+        <div class="props">
+          <div class="group">
+            <h4>Appearance</h4>
+            <div class="field"><label>Stroke</label><input id="stroke" type="color" value="#3a82f7"></div>
+            <div class="field"><label>Fill</label><input id="fill" type="color" value="#3a82f720"></div>
+            <div class="field"><label>Opacity</label><input id="opacity" type="number" min="0" max="1" step="0.05" value="1"></div>
+            <div class="field"><label>Thickness</label><input id="thickness" type="number" min="0.5" step="0.5" value="2"></div>
+          </div>
+          <div class="group">
+            <h4>Text</h4>
+            <div class="field"><label>Font</label>
+              <select id="font">
+                <option value="Helvetica">Helvetica</option>
+                <option value="Times-Roman">Times</option>
+                <option value="Courier">Courier</option>
+              </select>
+            </div>
+            <div class="field"><label>Size</label><input id="fontSize" type="number" min="6" value="14"></div>
+            <div class="field"><label>Content</label><input id="textContent" type="text" placeholder="Type text…"></div>
+          </div>
+          <div class="group">
+            <h4>Link</h4>
+            <div class="field"><label>Type</label>
+              <select id="linkType">
+                <option value="url">External URL</option>
+                <option value="page">Go To Page</option>
+              </select>
+            </div>
+            <div class="field"><label>Target</label><input id="linkTarget" type="text" placeholder="https://… or page #"></div>
+          </div>
+          <div class="group">
+            <h4>Signature</h4>
+            <div class="field" style="grid-template-columns:1fr">
+              <canvas id="sigPad" width="520" height="160" style="background:#0b0f19; border:1px solid var(--border); border-radius:8px"></canvas>
+              <div style="display:flex; gap:8px; margin-top:8px">
+                <button class="btn" id="sigClear">Clear</button>
+                <label class="btn" for="sigUpload">Upload PNG</label><input id="sigUpload" type="file" accept="image/png,image/webp,image/jpeg" style="display:none" />
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <h4>Page</h4>
+            <div class="field"><label>Go to</label><input id="gotoPage" type="number" min="1" value="1"></div>
+            <div class="field" style="grid-template-columns:1fr">
+              <button class="btn" id="gotoBtn">Go</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <div class="pill" id="status">No document</div>
+      <div class="pill" id="pageInfo">—</div>
+      <div class="pill">Tip: hold Space to pan</div>
+    </div>
+
+    <!-- Floating actions (quick help) -->
+    <div class="floating">
+      <button class="fab secondary" id="helpBtn">❔ Help</button>
+    </div>
+  </div>
+
+  <!-- Sticky note popup template -->
+  <div id="noteTemplate" class="note-popup hidden">
+    <textarea placeholder="Note…"></textarea>
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:6px">
+      <button class="btn" data-note="cancel">Cancel</button>
+      <button class="btn" data-note="save">Save</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // -------- State --------
+  const state = {
+    pdf: null,                    // pdf.js document
+    pdfBytes: null,               // original PDF bytes
+    scale: 1.0,
+    pages: [],                    // per-page: { div, canvas, ctx, overlaySVG, viewport, width, height }
+    currentPage: 1,
+    tool: 'pan',
+    dragging: false,
+    panOrigin: null,
+    undoStack: [],
+    redoStack: [],
+    annotations: {},              // page -> [ {type, ...} ]
+    selected: null,               // { page, id }
+    signatureImage: null,         // Image bitmap from sig pad or upload
+  };
+
+  // Shortcuts to DOM
+  const viewportEl = document.getElementById('viewport');
+  const thumbsEl = document.getElementById('thumbs');
+  const toolsEl = document.getElementById('tools');
+  const statusEl = document.getElementById('status');
+  const pageInfoEl = document.getElementById('pageInfo');
+  const zoomInBtn = document.getElementById('zoomIn');
+  const zoomOutBtn = document.getElementById('zoomOut');
+  const zoomLabel = document.getElementById('zoomLabel');
+  const fileInput = document.getElementById('fileInput');
+  const saveFlattenBtn = document.getElementById('saveFlatten');
+  const saveWithLinksBtn = document.getElementById('saveWithLinks');
+  const deleteBtn = document.getElementById('deleteBtn');
+  const undoBtn = document.getElementById('undoBtn');
+  const redoBtn = document.getElementById('redoBtn');
+  const gotoBtn = document.getElementById('gotoBtn');
+  const gotoPage = document.getElementById('gotoPage');
+
+  // Properties
+  const strokeEl = document.getElementById('stroke');
+  const fillEl = document.getElementById('fill');
+  const opacityEl = document.getElementById('opacity');
+  const thicknessEl = document.getElementById('thickness');
+  const fontEl = document.getElementById('font');
+  const fontSizeEl = document.getElementById('fontSize');
+  const textContentEl = document.getElementById('textContent');
+  const linkTypeEl = document.getElementById('linkType');
+  const linkTargetEl = document.getElementById('linkTarget');
+
+  // Signature pad
+  const sigPad = document.getElementById('sigPad');
+  const sigCtx = sigPad.getContext('2d');
+  const sigClear = document.getElementById('sigClear');
+  const sigUpload = document.getElementById('sigUpload');
+
+  // Helpers
+  const uid = () => Math.random().toString(36).slice(2,9);
+  const px = (n) => Math.round(n*100)/100;
+  const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+
+  function setStatus(msg){ statusEl.textContent = msg; }
+  function setTool(name){
+    state.tool = name;
+    for(const b of toolsEl.querySelectorAll('.btn[data-tool]')){
+      b.classList.toggle('active', b.dataset.tool===name);
+    }
+  }
+
+  // Initialize default tool
+  setTool('pan');
+
+  // -------- Load PDF --------
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    setStatus('Loading…');
+    state.pdfBytes = await file.arrayBuffer();
+    state.pdf = await pdfjsLib.getDocument({data: state.pdfBytes}).promise;
+    state.pages = []; state.annotations = {}; state.currentPage = 1;
+    renderAll();
+    setStatus(`Loaded: ${file.name}`);
+  });
+
+  // -------- Rendering --------
+  async function renderAll(){
+    thumbsEl.innerHTML = '';
+    viewportEl.innerHTML = '';
+    const count = state.pdf.numPages;
+
+    for(let p=1; p<=count; p++){
+      const page = await state.pdf.getPage(p);
+      const viewport = page.getViewport({scale: state.scale});
+
+      // Page wrapper
+      const div = document.createElement('div');
+      div.className = 'page';
+      div.style.width = viewport.width + 'px';
+      div.style.height = viewport.height + 'px';
+
+      // Canvas
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pdf';
+      canvas.width = viewport.width; canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({canvasContext: ctx, viewport}).promise;
+
+      // SVG overlay for annotations
+      const overlay = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      overlay.classList.add('overlay');
+      overlay.setAttribute('viewBox', `0 0 ${viewport.width} ${viewport.height}`);
+
+      div.appendChild(canvas);
+      div.appendChild(overlay);
+      viewportEl.appendChild(div);
+
+      // Store
+      state.pages[p] = {div, canvas, ctx, overlay, viewport, width: viewport.width, height: viewport.height};
+
+      // Build thumbnail
+      const tdiv = document.createElement('div'); tdiv.className='thumb'; tdiv.dataset.page=p;
+      const tcanvas = document.createElement('canvas');
+      const tctx = tcanvas.getContext('2d');
+      const scale = 140/viewport.width; // thumb width ~140px
+      tcanvas.width = viewport.width*scale; tcanvas.height = viewport.height*scale;
+      tctx.drawImage(canvas, 0, 0, tcanvas.width, tcanvas.height);
+      tdiv.appendChild(tcanvas);
+      tdiv.addEventListener('click', ()=> scrollToPage(p));
+      thumbsEl.appendChild(tdiv);
+
+      // Init annots
+      if(!state.annotations[p]) state.annotations[p] = [];
+      redrawPageAnnots(p);
+    }
+
+    updatePageInfo();
+    highlightActiveThumb();
+  }
+
+  function scrollToPage(p){
+    const el = state.pages[p]?.div; if(!el) return;
+    el.scrollIntoView({behavior:'smooth', block:'center'});
+    state.currentPage = p; updatePageInfo(); highlightActiveThumb();
+  }
+
+  function updatePageInfo(){
+    pageInfoEl.textContent = `Page ${state.currentPage} / ${state.pdf?.numPages||0}`;
+    zoomLabel.textContent = Math.round(state.scale*100)+'%';
+    gotoPage.max = state.pdf?.numPages||1;
+  }
+
+  function highlightActiveThumb(){
+    for(const t of thumbsEl.querySelectorAll('.thumb')){
+      t.classList.toggle('active', Number(t.dataset.page)===state.currentPage);
+    }
+  }
+
+  // -------- Zoom --------
+  zoomInBtn.addEventListener('click', async ()=>{state.scale = clamp(state.scale*1.1, 0.25, 5); await renderAll();});
+  zoomOutBtn.addEventListener('click', async()=>{state.scale = clamp(state.scale/1.1, 0.25, 5); await renderAll();});
+
+  // -------- Tools selection --------
+  toolsEl.addEventListener('click', (e)=>{
+    const b = e.target.closest('.btn[data-tool]'); if(!b) return; setTool(b.dataset.tool);
+  });
+
+  // -------- Page events (drawing & placing) --------
+  let dragStart = null; // {x,y, page}
+  let tempShape = null; // DOM node being created
+  let penPath = null;   // freehand path data
+  let spacePanning = false;
+
+  // Global key handling
+  window.addEventListener('keydown', (e)=>{
+    if(e.code==='Space'){ spacePanning = true; }
+    if(e.code==='Delete'){ deleteSelected(); }
+    if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); }
+    if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
+    const map = { 'v':'pan','t':'text','r':'rect','h':'highlight','p':'pen','n':'note','l':'link','s':'signature' };
+    const k = e.key.toLowerCase(); if(map[k]) setTool(map[k]);
+  });
+  window.addEventListener('keyup', (e)=>{ if(e.code==='Space'){ spacePanning=false; }});
+
+  viewportEl.addEventListener('mousedown', (e)=>{
+    const page = pageFromTarget(e.target); if(!page) return;
+    state.currentPage = page; updatePageInfo(); highlightActiveThumb();
+
+    const pt = clientToPageCoords(page, e.clientX, e.clientY);
+    dragStart = {page, x: pt.x, y: pt.y, scrollX: viewportEl.scrollLeft, scrollY: viewportEl.scrollTop, clientX:e.clientX, clientY:e.clientY};
+
+    // Pan with Space or Pan tool
+    if(spacePanning || state.tool==='pan'){
+      state.dragging = true; return;
+    }
+
+    // Start drawing/placing
+    const props = getProps();
+    const svg = state.pages[page].overlay;
+    if(state.tool==='rect' || state.tool==='highlight' || state.tool==='link'){
+      tempShape = document.createElementNS('http://www.w3.org/2000/svg','rect');
+      tempShape.setAttribute('x', pt.x); tempShape.setAttribute('y', pt.y);
+      tempShape.setAttribute('width', 1); tempShape.setAttribute('height', 1);
+      tempShape.classList.add('annot');
+      styleShape(tempShape, props, state.tool==='highlight');
+      svg.appendChild(tempShape);
+    } else if(state.tool==='pen'){
+      penPath = `M ${pt.x} ${pt.y}`;
+      tempShape = document.createElementNS('http://www.w3.org/2000/svg','path');
+      tempShape.setAttribute('d', penPath);
+      tempShape.classList.add('annot');
+      styleShape(tempShape, props, false);
+      svg.appendChild(tempShape);
+    } else if(state.tool==='text'){
+      // Single click to place text box; size from font
+      const g = createTextSVG(pt.x, pt.y, textContentEl.value||'Text');
+      g.classList.add('annot');
+      svg.appendChild(g);
+      commitAnnot(page, fromSVG(g, 'text', props));
+      redrawPageAnnots(page);
+      tempShape = null;
+    } else if(state.tool==='note'){
+      const g = createNoteSVG(pt.x, pt.y);
+      g.classList.add('annot'); svg.appendChild(g);
+      openNoteEditor(page, g);
+      tempShape = null;
+    } else if(state.tool==='signature'){
+      placeSignatureAt(page, pt.x, pt.y);
+      tempShape = null;
+    }
+  });
+
+  viewportEl.addEventListener('mousemove', (e)=>{
+    const page = pageFromTarget(e.target); if(!page) return;
+    if(state.dragging){ // panning
+      viewportEl.scrollLeft = dragStart.scrollX - (e.clientX - dragStart.clientX);
+      viewportEl.scrollTop  = dragStart.scrollY - (e.clientY - dragStart.clientY);
+      return;
+    }
+
+    if(!dragStart) return;
+    const pt = clientToPageCoords(page, e.clientX, e.clientY);
+
+    if(tempShape && (state.tool==='rect' || state.tool==='highlight' || state.tool==='link')){
+      const x = Math.min(dragStart.x, pt.x), y = Math.min(dragStart.y, pt.y);
+      const w = Math.abs(pt.x - dragStart.x), h = Math.abs(pt.y - dragStart.y);
+      tempShape.setAttribute('x', x); tempShape.setAttribute('y', y);
+      tempShape.setAttribute('width', Math.max(2,w)); tempShape.setAttribute('height', Math.max(2,h));
+    }
+
+    if(tempShape && state.tool==='pen'){
+      penPath += ` L ${pt.x} ${pt.y}`;
+      tempShape.setAttribute('d', penPath);
+    }
+  });
+
+  window.addEventListener('mouseup', (e)=>{
+    if(state.dragging){ state.dragging=false; dragStart=null; return; }
+    if(!dragStart) return;
+    const page = dragStart.page;
+
+    if(tempShape){
+      const props = getProps();
+      if(state.tool==='rect'){
+        commitAnnot(page, fromSVG(tempShape, 'rect', props));
+      } else if(state.tool==='highlight'){
+        const a = fromSVG(tempShape, 'highlight', props);
+        a.fill = rgba(props.stroke, 0.25); a.stroke = rgba(props.stroke, 0.0);
+        commitAnnot(page, a);
+      } else if(state.tool==='link'){
+        const a = fromSVG(tempShape, 'link', props);
+        a.linkType = linkTypeEl.value; a.linkTarget = linkTargetEl.value.trim();
+        a.stroke = rgba('#3a82f7', 0.8); a.fill = rgba('#3a82f7', 0.15);
+        commitAnnot(page, a);
+      } else if(state.tool==='pen'){
+        const a = { type:'pen', path: tempShape.getAttribute('d'), ...props };
+        commitAnnot(page, a);
+      }
+    }
+
+    tempShape = null; penPath=null; dragStart=null;
+    redrawPageAnnots(page);
+  });
+
+  viewportEl.addEventListener('click', (e)=>{
+    const target = e.target;
+    const page = pageFromTarget(target); if(!page) return;
+    if(target.classList.contains('annot')){
+      // Select
+      selectAnnot(page, target.dataset.id);
+    } else {
+      clearSelection();
+    }
+  });
+
+  function rgba(hex, a){
+    // hex like #rrggbb or #rrggbbaa or named (fallback)
+    const h = hex.replace('#','');
+    if(h.length===6){
+      const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
+      return `rgba(${r},${g},${b},${a})`;
+    }
+    return hex; // pass through
+  }
+
+  function styleShape(el, props, isHighlight){
+    el.setAttribute('fill', isHighlight ? rgba(props.stroke, .25) : props.fill);
+    el.setAttribute('stroke', props.stroke);
+    el.setAttribute('stroke-width', props.thickness);
+    el.setAttribute('opacity', props.opacity);
+  }
+
+  function getProps(){
+    return {
+      stroke: strokeEl.value,
+      fill: fillEl.value,
+      opacity: parseFloat(opacityEl.value||'1'),
+      thickness: parseFloat(thicknessEl.value||'1'),
+      font: fontEl.value,
+      fontSize: parseFloat(fontSizeEl.value||'14'),
+      text: textContentEl.value
+    };
+  }
+
+  function fromSVG(rectEl, type, props){
+    const x = parseFloat(rectEl.getAttribute('x'));
+    const y = parseFloat(rectEl.getAttribute('y'));
+    const w = parseFloat(rectEl.getAttribute('width'));
+    const h = parseFloat(rectEl.getAttribute('height'));
+    return { id: uid(), type, x:px(x), y:px(y), w:px(w), h:px(h), ...props };
+  }
+
+  function createTextSVG(x,y,text){
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.textContent = text || 'Text';
+    t.setAttribute('x', x); t.setAttribute('y', y);
+    t.setAttribute('font-family', fontEl.value);
+    t.setAttribute('font-size', fontSizeEl.value);
+    t.setAttribute('fill', strokeEl.value);
+    t.setAttribute('opacity', opacityEl.value);
+    g.appendChild(t); return g;
+  }
+
+  function createNoteSVG(x,y){
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', 10);
+    c.setAttribute('fill', '#ffc857'); c.setAttribute('stroke', '#caa43d'); c.setAttribute('stroke-width', 2);
+    g.appendChild(c); return g;
+  }
+
+  function openNoteEditor(page, g){
+    const popup = document.getElementById('noteTemplate').cloneNode(true);
+    popup.id=''; popup.classList.remove('hidden');
+    const pt = g.querySelector('circle');
+    const {div} = state.pages[page];
+    popup.style.left = (pt.getAttribute('cx')*1 + 16) + 'px';
+    popup.style.top  = (pt.getAttribute('cy')*1 + 16) + 'px';
+    div.appendChild(popup);
+    popup.querySelector('[data-note="cancel"]').onclick = ()=>{ popup.remove(); g.remove(); };
+    popup.querySelector('[data-note="save"]').onclick = ()=>{
+      commitAnnot(page, { id:uid(), type:'note', x:pt.getAttribute('cx')*1, y:pt.getAttribute('cy')*1, text: popup.querySelector('textarea').value });
+      popup.remove(); redrawPageAnnots(page);
+    };
+  }
+
+  function placeSignatureAt(page, x, y){
+    (async () => {
+      const img = await getSignatureImageBitmap();
+      if(!img) { alert('Create or upload a signature first.'); return; }
+      const w = img.width * 0.6, h = img.height * 0.6;
+      commitAnnot(page, { id:uid(), type:'signature', x:x, y:y-h, w:w, h:h, data: await bitmapToDataURL(img) });
+      redrawPageAnnots(page);
+    })();
+  }
+
+  async function getSignatureImageBitmap(){
+    if(state.signatureImage) return state.signatureImage;
+    // fallback from pad drawing
+    const url = sigPad.toDataURL('image/png');
+    if(url.length < 1000) return null; // empty-ish
+    const img = await createImageBitmap(await (await fetch(url)).blob());
+    state.signatureImage = img; return img;
+  }
+
+  async function bitmapToDataURL(bmp){
+    const cnv = document.createElement('canvas'); cnv.width=bmp.width; cnv.height=bmp.height;
+    const c = cnv.getContext('2d'); c.drawImage(bmp,0,0);
+    return cnv.toDataURL('image/png');
+  }
+
+  function commitAnnot(page, annot){
+    pushUndo();
+    state.annotations[page].push(annot);
+  }
+
+  function pushUndo(){
+    state.undoStack.push(JSON.stringify(state.annotations));
+    state.redoStack.length = 0; // clear redo path
+  }
+
+  function undo(){
+    if(!state.undoStack.length) return;
+    state.redoStack.push(JSON.stringify(state.annotations));
+    state.annotations = JSON.parse(state.undoStack.pop());
+    redrawAllAnnots();
+  }
+  function redo(){
+    if(!state.redoStack.length) return;
+    state.undoStack.push(JSON.stringify(state.annotations));
+    state.annotations = JSON.parse(state.redoStack.pop());
+    redrawAllAnnots();
+  }
+
+  function redrawAllAnnots(){
+    Object.keys(state.pages).forEach(p=> redrawPageAnnots(Number(p)));
+  }
+
+  function redrawPageAnnots(page){
+    const svg = state.pages[page].overlay;
+    svg.innerHTML='';
+    const list = state.annotations[page]||[];
+    for(const a of list){
+      let el=null;
+      if(a.type==='rect' || a.type==='highlight' || a.type==='link' || a.type==='signature'){
+        el = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        el.setAttribute('x', a.x); el.setAttribute('y', a.y);
+        el.setAttribute('width', a.w||120); el.setAttribute('height', a.h||40);
+        if(a.type==='signature'){
+          el.setAttribute('fill', 'url(#sig-'+a.id+')');
+          // Draw an <image> for visual; when flattening we embed real image
+          const img = document.createElementNS('http://www.w3.org/2000/svg','image');
+          img.setAttributeNS('http://www.w3.org/1999/xlink','href', a.data);
+          img.setAttribute('x', a.x); img.setAttribute('y', a.y);
+          img.setAttribute('width', a.w); img.setAttribute('height', a.h);
+          img.classList.add('annot'); img.dataset.id = a.id;
+          svg.appendChild(img);
+          el = null; // we already appended image
+        } else if(a.type==='highlight'){
+          el.setAttribute('fill', rgba(a.stroke, .25));
+          el.setAttribute('stroke', rgba(a.stroke, 0));
+          el.setAttribute('opacity', a.opacity);
+        } else if(a.type==='link'){
+          el.setAttribute('fill', 'rgba(58,130,247,0.15)');
+          el.setAttribute('stroke', 'rgba(58,130,247,0.8)');
+          el.setAttribute('stroke-dasharray','6 3');
+        } else {
+          el.setAttribute('fill', a.fill); el.setAttribute('stroke', a.stroke);
+          el.setAttribute('stroke-width', a.thickness); el.setAttribute('opacity', a.opacity);
+        }
+      } else if(a.type==='pen'){
+        el = document.createElementNS('http://www.w3.org/2000/svg','path');
+        el.setAttribute('d', a.path);
+        el.setAttribute('fill','none'); el.setAttribute('stroke', a.stroke);
+        el.setAttribute('stroke-width', a.thickness); el.setAttribute('opacity', a.opacity);
+        el.setAttribute('stroke-linecap','round'); el.setAttribute('stroke-linejoin','round');
+      } else if(a.type==='text'){
+        el = document.createElementNS('http://www.w3.org/2000/svg','text');
+        el.textContent = a.text || 'Text';
+        el.setAttribute('x', a.x); el.setAttribute('y', a.y);
+        el.setAttribute('font-family', a.font||'Helvetica');
+        el.setAttribute('font-size', a.fontSize||14);
+        el.setAttribute('fill', a.stroke||'#000');
+        el.setAttribute('opacity', a.opacity||1);
+      } else if(a.type==='note'){
+        const g = createNoteSVG(a.x, a.y);
+        g.addEventListener('dblclick', ()=>{
+          // reopen editor
+          const circle = g.querySelector('circle');
+          openNoteEditor(page, g);
+        });
+        el = g; // group
+      }
+      if(el){ el.classList.add('annot'); el.dataset.id = a.id; svg.appendChild(el); }
+    }
+  }
+
+  function pageFromTarget(t){
+    const pageDiv = t.closest?.('.page'); if(!pageDiv) return null;
+    return Number([...viewportEl.children].indexOf(pageDiv))+1;
+  }
+
+  function clientToPageCoords(page, cx, cy){
+    const rect = state.pages[page].div.getBoundingClientRect();
+    return { x: cx - rect.left, y: cy - rect.top };
+  }
+
+  function selectAnnot(page, id){ state.selected = {page, id}; markSelected(); }
+  function clearSelection(){ state.selected=null; markSelected(); }
+  function markSelected(){
+    document.querySelectorAll('.annot').forEach(n=> n.removeAttribute('filter'));
+    if(!state.selected) return;
+    const {page, id} = state.selected;
+    const svg = state.pages[page].overlay;
+    const el = [...svg.querySelectorAll('.annot')].find(n=>n.dataset.id===id);
+    if(!el) return;
+    el.setAttribute('filter','url(#shadow)');
+  }
+
+  function deleteSelected(){
+    if(!state.selected) return;
+    const {page, id} = state.selected;
+    pushUndo();
+    state.annotations[page] = state.annotations[page].filter(a=>a.id!==id);
+    clearSelection(); redrawPageAnnots(page);
+  }
+
+  deleteBtn.addEventListener('click', deleteSelected);
+  undoBtn.addEventListener('click', undo);
+  redoBtn.addEventListener('click', redo);
+
+  // Go to page
+  gotoBtn.addEventListener('click', ()=>{
+    const p = clamp(parseInt(gotoPage.value||'1'), 1, state.pdf.numPages);
+    scrollToPage(p);
+  });
+
+  // -------- Signature pad drawing --------
+  let sigDrawing=false, sigLast=null;
+  sigPad.addEventListener('mousedown', (e)=>{sigDrawing=true; sigLast={x:e.offsetX,y:e.offsetY};});
+  sigPad.addEventListener('mousemove', (e)=>{
+    if(!sigDrawing) return; sigCtx.lineWidth=2.5; sigCtx.lineCap='round'; sigCtx.strokeStyle='#e5e7eb';
+    sigCtx.beginPath(); sigCtx.moveTo(sigLast.x, sigLast.y); sigCtx.lineTo(e.offsetX, e.offsetY); sigCtx.stroke();
+    sigLast={x:e.offsetX,y:e.offsetY}; state.signatureImage=null; // invalidate cached bitmap
+  });
+  window.addEventListener('mouseup', ()=>{sigDrawing=false;});
+  sigClear.addEventListener('click', ()=>{sigCtx.clearRect(0,0,sigPad.width,sigPad.height); state.signatureImage=null;});
+  sigUpload.addEventListener('change', async (e)=>{
+    const f = e.target.files[0]; if(!f) return;
+    const url = URL.createObjectURL(f); const img = await createImageBitmap(await (await fetch(url)).blob());
+    state.signatureImage = img; sigCtx.clearRect(0,0,sigPad.width,sigPad.height);
+    const scale = Math.min(sigPad.width/img.width, sigPad.height/img.height)*0.9;
+    const w = img.width*scale, h=img.height*scale;
+    sigCtx.drawImage(img, (sigPad.width-w)/2, (sigPad.height-h)/2, w, h);
+  });
+
+  // -------- Saving / Flattening --------
+  saveFlattenBtn.addEventListener('click', async ()=>{
+    if(!state.pdfBytes) return alert('Open a PDF first');
+    setStatus('Flattening…');
+    const pdfDoc = await PDFLib.PDFDocument.load(state.pdfBytes);
+    const pages = pdfDoc.getPages();
+
+    // Embed default fonts once
+    const helv = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+    const times = await pdfDoc.embedFont(PDFLib.StandardFonts.TimesRoman);
+    const cour = await pdfDoc.embedFont(PDFLib.StandardFonts.Courier);
+
+    for(let i=0;i<pages.length;i++){
+      const pnum = i+1;
+      const page = pages[i];
+      const annots = state.annotations[pnum]||[];
+      // pdf.js uses top-left origin; pdf-lib uses bottom-left
+      const height = state.pages[pnum]?.height || page.getHeight();
+
+      for(const a of annots){
+        if(a.type==='rect' || a.type==='highlight'){
+          const color = hexToRgb(a.type==='highlight' ? a.stroke : a.fill);
+          const opacity = clamp(a.opacity??1, 0, 1);
+          // Fill
+          if(a.type==='highlight'){
+            page.drawRectangle({ x:a.x, y:height-(a.y+a.h), width:a.w, height:a.h, color: rgb255(color.r,color.g,color.b), opacity: 0.25 });
+          } else {
+            if(a.fill && a.fill!=='transparent'){
+              const fc = hexToRgb(a.fill);
+              page.drawRectangle({ x:a.x, y:height-(a.y+a.h), width:a.w, height:a.h, color: rgb255(fc.r,fc.g,fc.b), opacity });
+            }
+            if(a.stroke){
+              const sc = hexToRgb(a.stroke);
+              page.drawRectangle({ x:a.x, y:height-(a.y+a.h), width:a.w, height:a.h, borderColor: rgb255(sc.r,sc.g,sc.b), borderWidth: a.thickness||1, opacity });
+            }
+          }
+        } else if(a.type==='pen'){
+          // Convert SVG path to pdf-lib path via drawSvgPath
+          page.drawSvgPath(a.path, { x:0, y:0, borderColor: rgb255(...Object.values(hexToRgb(a.stroke))), borderWidth: a.thickness||1, opacity: a.opacity??1 });
+        } else if(a.type==='text'){
+          const font = a.font==='Times-Roman'?times : a.font==='Courier'?cour : helv;
+          const color = rgb255(...Object.values(hexToRgb(a.stroke||'#000000')));
+          page.drawText(a.text||'Text', { x:a.x, y:height-(a.y), size:a.fontSize||14, font, color, opacity:a.opacity??1 });
+        } else if(a.type==='signature'){
+          const pngBytes = dataURLtoBytes(a.data);
+          const img = await pdfDoc.embedPng(pngBytes);
+          page.drawImage(img, { x:a.x, y:height-(a.y+a.h), width:a.w, height:a.h, opacity:a.opacity??1 });
+        } else if(a.type==='note'){
+          // Flatten as small sticky icon + text box near it
+          const yellow = rgb255(255,200,87);
+          page.drawCircle({ x:a.x, y:height-(a.y), size:6, color:yellow });
+          if(a.text){
+            page.drawText(a.text, { x:a.x+12, y:height-(a.y+12), size:10, font:helv, color: rgb255(230,230,234), opacity:0.9, lineHeight:12, maxWidth:200 });
+          }
+        }
+      }
+    }
+
+    const out = await pdfDoc.save();
+    downloadBytes(out, 'flattened.pdf');
+    setStatus('Flattened saved');
+  });
+
+  saveWithLinksBtn.addEventListener('click', async ()=>{
+    if(!state.pdfBytes) return alert('Open a PDF first');
+    setStatus('Exporting (with links)…');
+    const pdfDoc = await PDFLib.PDFDocument.load(state.pdfBytes);
+    const pages = pdfDoc.getPages();
+
+    const helv = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+
+    for(let i=0;i<pages.length;i++){
+      const pnum = i+1;
+      const page = pages[i];
+      const annots = state.annotations[pnum]||[];
+      const height = state.pages[pnum]?.height || page.getHeight();
+
+      // We'll burn visual annotations except 'link' (we add true link annotations)
+      for(const a of annots){
+        if(a.type==='link') continue; // skip visual box
+        if(a.type==='rect'){
+          if(a.fill && a.fill!=='transparent'){
+            const fc = hexToRgb(a.fill); page.drawRectangle({x:a.x,y:height-(a.y+a.h),width:a.w,height:a.h,color:rgb255(fc.r,fc.g,fc.b),opacity:a.opacity??1});
+          }
+          if(a.stroke){const sc=hexToRgb(a.stroke); page.drawRectangle({x:a.x,y:height-(a.y+a.h),width:a.w,height:a.h,borderColor:rgb255(sc.r,sc.g,sc.b),borderWidth:a.thickness||1,opacity:a.opacity??1});}
+        } else if(a.type==='pen'){
+          page.drawSvgPath(a.path, { x:0, y:0, borderColor: rgb255(...Object.values(hexToRgb(a.stroke))), borderWidth: a.thickness||1, opacity: a.opacity??1 });
+        } else if(a.type==='text'){
+          const color = rgb255(...Object.values(hexToRgb(a.stroke||'#000000')));
+          page.drawText(a.text||'Text', { x:a.x, y:height-(a.y), size:a.fontSize||14, font:helv, color, opacity:a.opacity??1 });
+        } else if(a.type==='signature'){
+          const pngBytes = dataURLtoBytes(a.data);
+          const img = await pdfDoc.embedPng(pngBytes);
+          page.drawImage(img, { x:a.x, y:height-(a.y+a.h), width:a.w, height:a.h, opacity:a.opacity??1 });
+        } else if(a.type==='note'){
+          // Leave note visuals similar as flattening
+          const yellow = rgb255(255,200,87);
+          page.drawCircle({ x:a.x, y:height-(a.y), size:6, color:yellow });
+          if(a.text){ page.drawText(a.text, { x:a.x+12, y:height-(a.y+12), size:10, font:helv, color: rgb255(230,230,234), opacity:0.9, lineHeight:12, maxWidth:200 }); }
+        }
+      }
+
+      // Add real PDF link annotations
+      const linkAnnots = (state.annotations[pnum]||[]).filter(a=>a.type==='link');
+      for(const a of linkAnnots){
+        const rect = [ a.x, height-(a.y+a.h), a.x+a.w, height-(a.y) ];
+        let annot;
+        if(a.linkType==='page'){
+          const target = clamp(parseInt(a.linkTarget||'1'), 1, pages.length);
+          const dest = pdfDoc.context.obj({ Type: 'Fit', D: [ pages[target-1].ref ]});
+          // Use GoTo with D array
+          annot = pdfDoc.context.obj({
+            Type: 'Annot', Subtype: 'Link', Rect: rect, Border: [0,0,0], Dest: [ pages[target-1].ref, 'Fit' ]
+          });
+        } else { // url
+          annot = pdfDoc.context.obj({
+            Type: 'Annot', Subtype: 'Link', Rect: rect, Border: [0,0,0],
+            A: { Type: 'Action', S: 'URI', URI: a.linkTarget||'' }
+          });
+        }
+        const annotsArray = page.node.Annots() ?? pdfDoc.context.obj([]);
+        if(!page.node.Annots()) page.node.set(PDFLib.PDFName.of('Annots'), annotsArray);
+        annotsArray.push(annot);
+      }
+    }
+
+    const out = await pdfDoc.save();
+    downloadBytes(out, 'with-links.pdf');
+    setStatus('Saved (with links)');
+  });
+
+  function dataURLtoBytes(dataURL){
+    const parts = dataURL.split(','); const b64 = parts[1]; const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i); return bytes;
+  }
+
+  function hexToRgb(hex){
+    const h = hex.replace('#','');
+    if(h.length===3){
+      const r=parseInt(h[0]+h[0],16), g=parseInt(h[1]+h[1],16), b=parseInt(h[2]+h[2],16); retur
